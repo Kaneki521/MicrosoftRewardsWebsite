@@ -12,10 +12,17 @@ import {
 } from './background/dailySchedule';
 import { migrateRunState } from './background/stateMigration';
 import { handleAlarmStep, mayOpenFirstResult, watchSearchesToggle } from './background/searchRunner';
+import { cancelReading, clearReadProgress, handleReadAlarm, handleReadStartAlarm } from './background/readRunner';
+import { applyAuthCode, clearReadAuth, patchReadAuth, validateReadAccess } from './background/readApi';
 import { isCleanupAlarm, sweepStaleTabs } from './background/tabCleanup';
-import type { CommandReceipt, TaskKind } from './background/taskRun';
+import { TASK_KINDS, type TaskKind } from './utils/runState';
+import { buildReadAuthUrl, isReadAlarm, isReadStartAlarm } from './utils/readTask';
+import type { CommandReceipt } from './background/taskRun';
 
-const TASK_KINDS: readonly TaskKind[] = ['search', 'daily', 'claim'];
+interface ReadAuthReply {
+    ok: boolean;
+    message: string;
+}
 
 function requestedTasks(value: unknown): TaskKind[] | undefined {
     if (!Array.isArray(value)) return undefined;
@@ -30,6 +37,10 @@ function failedReceipt(): CommandReceipt {
     return { accepted: false, reason: '操作未能完成，请重试' };
 }
 
+function failedAuth(message: string): ReadAuthReply {
+    return { ok: false, message };
+}
+
 export default defineBackground(() => {
     browser.runtime.onInstalled.addListener(handleInstallOrUpdate);
     browser.runtime.onStartup.addListener(handleStartup);
@@ -40,7 +51,14 @@ export default defineBackground(() => {
     // Migration is idempotent and opens nothing; a wake that is the first one
     // after an update has to run it before the alarm is armed.
     void migrateRunState().then(() => scheduleDailyCheckAlarm());
-    browser.runtime.onMessage.addListener((request: { action?: string; only?: unknown }, sender: { tab?: { id?: number } }, sendResponse: (response?: unknown) => void) => {
+    browser.runtime.onMessage.addListener((request: {
+        action?: string;
+        only?: unknown;
+        code?: unknown;
+        error?: unknown;
+        errorDescription?: unknown;
+        value?: unknown;
+    }, sender: { tab?: { id?: number } }, sendResponse: (response?: unknown) => void) => {
         // The button is a manual start: it may re-run a task already attempted
         // today. `only` limits that to the tasks the button named, so a retry of
         // one failure does not restart the others. Start and stop answer with a
@@ -68,6 +86,73 @@ export default defineBackground(() => {
                 () => sendResponse({ allowed: false })
             );
             return true;
+        } else if (request.action === 'readAuthOpen') {
+            // Opened by the background, not the popup: the popup closes as soon
+            // as the auth tab takes focus, and the round has to survive that.
+            void browser.tabs.create({ url: buildReadAuthUrl(), active: true }).then(
+                () => sendResponse({ accepted: true }),
+                () => sendResponse({ accepted: false, reason: '无法打开授权页面' })
+            );
+            return true;
+        } else if (request.action === 'readAuthCallback') {
+            // Sent by the content script on login.live.com's desktop callback
+            // page. The tab is closed once the code has been exchanged, so the
+            // popup can be reopened on a settled state rather than a blank page.
+            const tabId = sender.tab?.id;
+            const code = typeof request.code === 'string' ? request.code : '';
+            const error = typeof request.error === 'string' ? request.error : '';
+            const description = typeof request.errorDescription === 'string' ? request.errorDescription : '';
+            void (async (): Promise<ReadAuthReply> => {
+                if (error) {
+                    const message = `授权失败：${description || error}`;
+                    await clearReadAuth(message);
+                    return failedAuth(message);
+                }
+                if (!code) return failedAuth('回调里没有授权码');
+                const result = await applyAuthCode(code);
+                // Keep a failure visible after the tab closes. A success clears
+                // it inside applyAuthCode's token exchange.
+                if (!result.ok) await patchReadAuth({ lastError: result.message, lastErrorAt: Date.now() });
+                return { ok: result.ok, message: result.message };
+            })().then(
+                (reply) => {
+                    sendResponse(reply);
+                    // A successful exchange leaves nothing to read on that page.
+                    // A failure stays visible there instead of being closed away;
+                    // the popup also keeps it as `lastError`.
+                    if (reply.ok && tabId != null) void browser.tabs.remove(tabId).catch(() => {});
+                },
+                () => sendResponse(failedAuth('授权处理失败，请重试'))
+            );
+            return true;
+        } else if (request.action === 'readAuthSubmit') {
+            // Manual fallback for the same flow: the user pastes the callback
+            // URL or the bare code into the popup.
+            const value = typeof request.value === 'string' ? request.value : '';
+            void applyAuthCode(value).then(
+                (result) => sendResponse({ ok: result.ok, message: result.message }),
+                () => sendResponse(failedAuth('授权处理失败，请重试'))
+            );
+            return true;
+        } else if (request.action === 'readAuthValidate') {
+            void validateReadAccess().then(
+                (result) => sendResponse({ ok: result.ok, message: result.message }),
+                () => sendResponse(failedAuth('验证失败，请重试'))
+            );
+            return true;
+        } else if (request.action === 'readAuthClear') {
+            // Clearing the token must also end a read that is using it, or the
+            // next step would run with credentials the user just removed.
+            void (async (): Promise<ReadAuthReply> => {
+                await cancelReading('已清除阅读授权');
+                await clearReadAuth();
+                await clearReadProgress();
+                return { ok: true, message: '授权已清除' };
+            })().then(
+                (reply) => sendResponse(reply),
+                () => sendResponse(failedAuth('清除授权失败，请重试'))
+            );
+            return true;
         }
     });
     // Registered here, at the worker's top level, so the browser wakes a
@@ -75,6 +160,8 @@ export default defineBackground(() => {
     browser.alarms.onAlarm.addListener((alarm) => {
         if (isCleanupAlarm(alarm.name)) void sweepStaleTabs();
         else if (isDailyCheckAlarm(alarm.name)) void handleDailyCheckAlarm(alarm);
+        else if (isReadStartAlarm(alarm.name)) void handleReadStartAlarm(alarm);
+        else if (isReadAlarm(alarm.name)) void handleReadAlarm(alarm);
         else void handleAlarmStep(alarm);
     });
 });

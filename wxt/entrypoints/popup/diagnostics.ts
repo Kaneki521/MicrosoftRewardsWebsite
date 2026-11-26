@@ -1,5 +1,5 @@
 import { RECOGNIZER_VERSION, RECOGNITION_CAUSES } from '@/entrypoints/utils/rewardsRecognition';
-import type { RunProgress, TaskResult, TaskResults, TaskRunState } from '@/entrypoints/utils/runState';
+import { TASK_KINDS, type RunProgress, type TaskResult, type TaskResults, type TaskRunState } from '@/entrypoints/utils/runState';
 
 // A11 脱敏诊断。导出不是存储对象的拷贝，而是白名单字段的重新构造：
 // 每个字段单独取值并校验，存储里出现的其他内容（账号、邮箱、Cookie、
@@ -34,7 +34,7 @@ export interface DiagnosticRun {
     phase: string;
     // 存储里的开始时间不合形状时为 null，不回退成其他时刻。
     startedAt: string | null;
-    tasks: { search: boolean; daily: boolean; claim: boolean };
+    tasks: { search: boolean; daily: boolean; claim: boolean; read: boolean };
     progress: { opened: number; total: number; isSearching: boolean };
 }
 
@@ -82,7 +82,7 @@ export function buildDiagnosticReport(input: DiagnosticInput): DiagnosticReport 
             phase: input.run.phase,
             startedAt: iso(input.run.startedAt),
             // 本轮被要求执行哪些任务；不含标签页 id 与设置数值。
-            tasks: { search: flag(input.run.search), daily: flag(input.run.daily), claim: flag(input.run.claim) },
+            tasks: { search: flag(input.run.search), daily: flag(input.run.daily), claim: flag(input.run.claim), read: flag(input.run.read) },
             progress: {
                 opened: num(input.progress?.opened) ?? 0,
                 total: num(input.progress?.total) ?? 0,
@@ -92,7 +92,7 @@ export function buildDiagnosticReport(input: DiagnosticInput): DiagnosticReport 
         : null;
 
     const results: Partial<Record<string, DiagnosticTaskResult>> = {};
-    for (const kind of ['search', 'daily', 'claim'] as const) {
+    for (const kind of TASK_KINDS) {
         const picked = taskResult(input.results[kind]);
         if (picked != null) results[kind] = picked;
     }

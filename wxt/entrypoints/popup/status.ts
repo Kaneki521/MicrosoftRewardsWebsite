@@ -1,5 +1,5 @@
 import type { LoadState, SaveState } from '@/entrypoints/hooks/useStorage';
-import { belongsToRound, roundReference, type TaskResult, type TaskResults, type TaskStatus } from '@/entrypoints/utils/runState';
+import { TASK_KINDS, belongsToRound, roundReference, type TaskResult, type TaskResults, type TaskStatus } from '@/entrypoints/utils/runState';
 
 export type StatusTone = 'idle' | 'busy' | 'attention' | 'done';
 
@@ -17,11 +17,11 @@ export function needsHandling(result: TaskResult | undefined): boolean {
 // Failed and unconfirmed are the items the user still has to look at.
 // A cancel is shown on its own row and is not one of those.
 export function countNeedsHandling(results: TaskResults): number {
-    return [results.search, results.daily, results.claim].filter(needsHandling).length;
+    return TASK_KINDS.filter((kind) => needsHandling(results[kind])).length;
 }
 
 function present(results: TaskResults): TaskResult[] {
-    return [results.search, results.daily, results.claim].filter((result): result is TaskResult => result != null);
+    return TASK_KINDS.map((kind) => results[kind]).filter((result): result is TaskResult => result != null);
 }
 
 // The rows of one round: the live one while it runs, else the newest round the
@@ -31,7 +31,7 @@ function present(results: TaskResults): TaskResult[] {
 export function resultsOfRound(results: TaskResults, runId: number | null): TaskResults {
     const reference = roundReference(results, runId);
     const picked: TaskResults = {};
-    for (const kind of ['search', 'daily', 'claim'] as const) {
+    for (const kind of TASK_KINDS) {
         const row = results[kind];
         if (row != null && belongsToRound(row, reference)) picked[kind] = row;
     }
@@ -66,6 +66,7 @@ const TASK_LABELS = [
     ['search', '搜索'],
     ['daily', '每日活动'],
     ['claim', '领取积分'],
+    ['read', '阅读任务'],
 ] as const;
 
 // A write still in flight wins over an earlier success. One field finishing
@@ -92,6 +93,7 @@ export function nextRoundSummary(input: {
     search: boolean;
     daily: boolean;
     claim: boolean;
+    read: boolean;
     searches: number;
     timeout: number;
 }): string {

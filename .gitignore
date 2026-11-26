@@ -18,3 +18,9 @@ gulpfile.js
 # do not commit. (History cleanup for already-committed binaries is a separate task.)
 *.zip
 *.apk
+
+# Local agent workspace data; not part of the extension.
+.workbuddy/
+
+# Personal scratch directory (reference scripts, temporary notes).
+00.临时/

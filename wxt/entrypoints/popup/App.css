@@ -746,3 +746,86 @@ button, input, select {
         margin-left: auto;
     }
 }
+
+/* Reading-task authorization. The userscript's floating panel became a popup
+   section, so these styles only describe the inline state and controls. */
+
+.read-auth {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+}
+
+.read-auth-state {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-12);
+}
+
+.read-auth-label {
+    font-weight: var(--weight-medium);
+}
+
+.task-status--done {
+    color: var(--success-text);
+    background: var(--success-bg);
+}
+
+.read-auth-actions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+    margin-top: var(--space-8);
+}
+
+.read-auth-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+    margin-top: var(--space-8);
+}
+
+.read-auth-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: var(--space-8) var(--space-12);
+    font: inherit;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border-control);
+    border-radius: var(--radius-control);
+}
+
+.read-auth-input:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+}
+
+.read-auth-notice {
+    margin: 0;
+    font-size: var(--font-12);
+}
+
+.read-auth-notice--info {
+    color: var(--muted);
+}
+
+.read-auth-notice--ok {
+    color: var(--success-text);
+}
+
+.read-auth-notice--error {
+    color: var(--error-text);
+}
+
+.read-auth .divider {
+    margin: var(--space-12) 0;
+}
+
+/* The reading row's own progress: the row already carries the state label, so
+   the bar sits under it without repeating the card-level layout. */
+
+.task-read-progress {
+    margin-top: var(--space-8);
+}

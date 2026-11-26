@@ -1,5 +1,6 @@
 import { getStorageItem, setStorageItem, setStorageItems } from '@/entrypoints/hooks/useStorage';
 import { StorageValues } from '@/entrypoints/enums/storageValues';
+import { ensureCleanupAlarm } from './cleanupAlarm';
 import {
     ATTEMPTS_KEY,
     CONFIG_KEY,
@@ -9,6 +10,7 @@ import {
     RUN_KEY,
     SEARCH_GRANTS_KEY,
     STEP_KEY,
+    TASK_KINDS,
     type CommandReceipt,
     type RunConfig,
     type RunPhase,
@@ -59,8 +61,7 @@ export function abandonRun(reason: string): Promise<void> {
         const state = await read();
         if (!state) return;
         const results = (await getStorageItem<TaskResults>(RESULTS_KEY, StorageValues.LOCAL)) ?? {};
-        const kinds: TaskKind[] = ['search', 'daily', 'claim'];
-        for (const kind of kinds) {
+        for (const kind of TASK_KINDS) {
             if (state[kind] && (!results[kind] || results[kind]?.status === 'running')) {
                 results[kind] = stamped(state.id, { status: 'unconfirmed', reason });
             }
@@ -118,7 +119,7 @@ export function beginRun(kinds: TaskKind[], config: RunConfig): Promise<{ id: nu
         // exists.
         const earlier = (await getStorageItem<TaskResults>(RESULTS_KEY, StorageValues.LOCAL)) ?? {};
         const results: TaskResults = {};
-        for (const kind of ['search', 'daily', 'claim'] as const) {
+        for (const kind of TASK_KINDS) {
             if (kinds.includes(kind)) continue;
             const kept = earlier[kind];
             if (kept && kept.status !== 'running') results[kind] = kept;
@@ -130,6 +131,7 @@ export function beginRun(kinds: TaskKind[], config: RunConfig): Promise<{ id: nu
             search: kinds.includes('search'),
             daily: kinds.includes('daily'),
             claim: kinds.includes('claim'),
+            read: kinds.includes('read'),
             startedAt: Date.now(),
         });
         await setStorageItems({
@@ -138,6 +140,13 @@ export function beginRun(kinds: TaskKind[], config: RunConfig): Promise<{ id: nu
             [PROGRESS_KEY]: { opened: 0, total: config.searches, isSearching: kinds.includes('search') },
             [RESULTS_KEY]: results,
         }, StorageValues.LOCAL);
+        // Reading opens no tab, so nothing else in its round would arm the
+        // sweep. Arming it here covers the window before the reading runner's
+        // first network call, where a worker death would otherwise leave the
+        // record with no deadline and no alarm to enforce one. A failure is not
+        // fatal here: the runner arms it again, and refuses the task if that
+        // also fails.
+        if (kinds.includes('read')) await ensureCleanupAlarm().catch(() => {});
         return { id, started: true };
     });
 }
@@ -150,7 +159,7 @@ export function endRun(runId: number, kind: TaskKind): Promise<void> {
         const state = await read();
         if (!state || state.id !== runId) return;
         state[kind] = false;
-        if (!state.search && !state.daily && !state.claim) await write(null);
+        if (!state.search && !state.daily && !state.claim && !state.read) await write(null);
         else await write(state);
     });
 }
@@ -267,6 +276,17 @@ export function noteSearchDeadline(runId: number, deadline: number): Promise<voi
         const state = await read();
         if (!state || state.id !== runId) return;
         await write({ ...state, searchDeadline: deadline });
+    });
+}
+
+// The reading half's equivalent of noteSearchDeadline. Reading opens no page,
+// so this deadline is the only thing a sweep after a worker restart can judge
+// an in-flight read by; without it the record would block every later start.
+export function noteReadDeadline(runId: number, deadline: number): Promise<void> {
+    return enqueue(async () => {
+        const state = await read();
+        if (!state || state.id !== runId) return;
+        await write({ ...state, readDeadline: deadline });
     });
 }
 

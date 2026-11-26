@@ -40,7 +40,7 @@ describe('buildDiagnosticReport 定位字段', () => {
             id: 7,
             phase: 'running',
             startedAt: new Date(NOW - 60000).toISOString(),
-            tasks: { search: true, daily: true, claim: false },
+            tasks: { search: true, daily: true, claim: false, read: false },
             progress: { opened: 3, total: 10, isSearching: true },
         });
         expect(report.results.search).toEqual({ status: 'failed', at: new Date(NOW - 30000).toISOString(), runId: 7 });

@@ -296,3 +296,54 @@ describe('TaskResults 手动入口', () => {
     expect(manualLink('每日活动')).toBeNull();
   });
 });
+
+// 阅读任务是唯一有“等待起跑”中间态的任务：搜索还开着时它只是排队，
+// 起跑后才有提交进度。这一行必须能分别说明这两件事。
+describe('TaskResults 阅读任务行', () => {
+  let host: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    fakeBrowser.reset();
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  function renderRead(readProgress: { isLoaded: boolean; isReading: boolean; completed: number; target: number; max: number }, readWaitingForSearch: boolean): void {
+    act(() => {
+      root.render(
+        <TaskResultsList
+          results={{ read: { status: 'running' } }}
+          isRunning
+          readProgress={readProgress}
+          readDelaySeconds={20}
+          readWaitingForSearch={readWaitingForSearch}
+        />
+      );
+    });
+  }
+
+  it('等待搜索结束时显示待执行与等待说明', () => {
+    renderRead({ isLoaded: true, isReading: false, completed: 0, target: 11, max: 30 }, true);
+
+    expect(host.textContent).toContain('待执行');
+    expect(host.textContent).toContain('等待搜索任务结束');
+    expect(host.textContent).toContain('20');
+    expect(host.querySelector('[role="progressbar"]')).toBeNull();
+  });
+
+  it('提交中显示执行中与行内进度', () => {
+    renderRead({ isLoaded: true, isReading: true, completed: 3, target: 11, max: 30 }, false);
+
+    expect(host.textContent).toContain('执行中');
+    expect(host.textContent).toContain('3');
+    expect(host.textContent).toContain('11');
+    expect(host.querySelector('[role="progressbar"]')).not.toBeNull();
+  });
+});

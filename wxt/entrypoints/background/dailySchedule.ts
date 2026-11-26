@@ -5,9 +5,10 @@ import { StorageValues } from '@/entrypoints/enums/storageValues';
 import { DEFAULTS, clampSetting } from '@/entrypoints/utils/settings';
 import { localDateId } from '@/entrypoints/utils/localDate';
 import { setBadgeText } from '@/entrypoints/utils/browserAction';
-import { MIGRATION_KEY, STATE_MIGRATION_VERSION, type CommandReceipt, type RunConfig, type TaskKind, type TaskResult } from '@/entrypoints/utils/runState';
+import { MIGRATION_KEY, STATE_MIGRATION_VERSION, TASK_KINDS, type CommandReceipt, type RunConfig, type TaskKind, type TaskResult } from '@/entrypoints/utils/runState';
 import { openDailyRewards } from './dailyRewards';
 import { finishSearch, startSearches, stopSearches } from './searchRunner';
+import { finishRead, startReading, stopReading } from './readRunner';
 import { clearTrackedTabs } from './tabCleanup';
 import { abandonRun, beginRun, currentRun, endRun, noteAttempt, readAttempts, recordResult, requestStop, revokeSearchGrants, settleUnresolved } from './taskRun';
 import { migrateRunState } from './stateMigration';
@@ -24,6 +25,7 @@ interface RoundPlan {
     wantsSearch: boolean;
     wantsDaily: boolean;
     wantsClaim: boolean;
+    wantsRead: boolean;
 }
 
 // What a round would run, from the user's settings. Shared by the button and
@@ -31,7 +33,7 @@ interface RoundPlan {
 // automatic path also requires autoRunEnabled.
 async function planRound(): Promise<RoundPlan> {
     const s = await getStorageItems(
-        ['searches', 'timeout', 'closeTime', 'active', 'autoDaily', 'claimPoints'],
+        ['searches', 'timeout', 'closeTime', 'readDelay', 'active', 'autoDaily', 'claimPoints', 'autoRead'],
         StorageValues.SYNC
     );
     const searches = clampSetting('searches', s.searches);
@@ -40,10 +42,12 @@ async function planRound(): Promise<RoundPlan> {
             searches,
             timeout: clampSetting('timeout', s.timeout),
             closeTime: clampSetting('closeTime', s.closeTime),
+            readDelay: clampSetting('readDelay', s.readDelay),
         },
         wantsSearch: (s.active ?? DEFAULTS.active) && searches > 0,
         wantsDaily: s.autoDaily ?? DEFAULTS.autoDaily,
         wantsClaim: s.claimPoints ?? DEFAULTS.claimPoints,
+        wantsRead: s.autoRead ?? DEFAULTS.autoRead,
     };
 }
 
@@ -52,6 +56,7 @@ function kindsOf(plan: RoundPlan, only?: TaskKind[]): TaskKind[] {
     if (plan.wantsSearch && (!only || only.includes('search'))) kinds.push('search');
     if (plan.wantsDaily && (!only || only.includes('daily'))) kinds.push('daily');
     if (plan.wantsClaim && (!only || only.includes('claim'))) kinds.push('claim');
+    if (plan.wantsRead && (!only || only.includes('read'))) kinds.push('read');
     return kinds;
 }
 
@@ -142,13 +147,25 @@ export async function runRewards(options: RunOptions = {}): Promise<CommandRecei
             await finishSearch(run.id, { status: 'failed', reason: reasonOf(error) });
         }
     }
+    if (pending.includes('read')) {
+        // 搜索也选中时，阅读不跟着一起起跑：它由 finishSearch 在搜索收尾后
+        // 按时钟安排（等待时间来自本轮冻结配置）。没有搜索任务时没有可等的
+        // 结束点，直接开始阅读。
+        if (!pending.includes('search')) {
+            // 不 await：阅读要访问网络并跨多步执行，本轮启动的收据不该等它。
+            // 异常通过它自己的收尾写入结果，否则轮次记录会一直占着锁。
+            void startReading(run.id).catch((error: unknown) =>
+                finishRead(run.id, { status: 'failed', reason: reasonOf(error) })
+            );
+        }
+    }
     return { accepted: true };
 }
 
 async function failDashboard(runId: number, pending: TaskKind[], error: unknown): Promise<void> {
     const result: TaskResult = { status: 'failed', reason: reasonOf(error) };
     for (const kind of pending) {
-        if (kind === 'search') continue;
+        if (kind === 'search' || kind === 'read') continue;
         await recordResult(runId, kind, result);
         await endRun(runId, kind);
     }
@@ -166,6 +183,9 @@ function reasonOf(error: unknown): string {
 export async function stopRewards(): Promise<CommandReceipt> {
     const runId = await requestStop();
     await stopSearches();
+    // Reading owns no tab; its alarms and short timer are what "stop" has to
+    // clear. A step already sent cannot be undone, but no further one starts.
+    await stopReading();
     // Nothing is running, or the round ended between the click and here: the
     // stop is refused with that reason instead of being dropped.
     if (runId == null) return { accepted: false, reason: '当前没有运行中的任务' };
@@ -173,7 +193,7 @@ export async function stopRewards(): Promise<CommandReceipt> {
     if (!run || run.id !== runId) return { accepted: false, reason: '当前没有运行中的任务' };
     // Only the kinds this round started. settleUnresolved ignores the rest, and
     // naming them here keeps a stop from being read as "cancel every task".
-    const started: TaskKind[] = (['search', 'daily', 'claim'] as const).filter((kind) => run[kind]);
+    const started: TaskKind[] = TASK_KINDS.filter((kind) => run[kind]);
     const cancelled: TaskResult = { status: 'cancelled', reason: '已停止' };
     await settleUnresolved(runId, started, cancelled);
     // A stopped round's tabs must not leave the results page afterwards, so
@@ -187,6 +207,10 @@ export async function stopRewards(): Promise<CommandReceipt> {
     // a page the user opened afterwards — reuse that id and be closed instead.
     // The dashboard visit ends the daily and claim records when it closes.
     await endRun(runId, 'search');
+    // Reading has no page either, and its only in-worker work was the step just
+    // cleared. Its result is already settled above, so the flag can go now; a
+    // step that was mid-flight is turned away by the same record check.
+    await endRun(runId, 'read');
     return { accepted: true };
 }
 
@@ -208,12 +232,13 @@ export function isDailyCheckAlarm(name: string): boolean {
 // discipline tabCleanup uses for its sweep alarm. The task toggles alone no
 // longer arm it: they describe a manual round, not an automatic one.
 export async function scheduleDailyCheckAlarm(): Promise<void> {
-    const s = await getStorageItems(['autoRunEnabled', 'active', 'autoDaily', 'claimPoints'], StorageValues.SYNC);
+    const s = await getStorageItems(['autoRunEnabled', 'active', 'autoDaily', 'claimPoints', 'autoRead'], StorageValues.SYNC);
     const autoRun = s.autoRunEnabled ?? DEFAULTS.autoRunEnabled;
     const hasTask =
         (s.active ?? DEFAULTS.active) ||
         (s.autoDaily ?? DEFAULTS.autoDaily) ||
-        (s.claimPoints ?? DEFAULTS.claimPoints);
+        (s.claimPoints ?? DEFAULTS.claimPoints) ||
+        (s.autoRead ?? DEFAULTS.autoRead);
     if (!autoRun || !hasTask) {
         await browser.alarms.clear(DAILY_CHECK_ALARM);
         await noteDailyCheckScheduled();
@@ -244,6 +269,7 @@ export function watchDailyFeatureToggles(): void {
     storage.watch<boolean>('sync:active', reschedule);
     storage.watch<boolean>('sync:autoDaily', reschedule);
     storage.watch<boolean>('sync:claimPoints', reschedule);
+    storage.watch<boolean>('sync:autoRead', reschedule);
 }
 
 const SCHEDULE_STAMP_KEY = 'dailyCheckScheduledAt';
@@ -267,6 +293,8 @@ export async function handleInstallOrUpdate(details: { reason: string }): Promis
             openFirstResult: DEFAULTS.openFirstResult,
             claimPoints: DEFAULTS.claimPoints,
             autoRunEnabled: DEFAULTS.autoRunEnabled,
+            autoRead: DEFAULTS.autoRead,
+            readDelay: DEFAULTS.readDelay,
         }, StorageValues.SYNC);
         await setStorageItems({ [MIGRATION_KEY]: STATE_MIGRATION_VERSION }, StorageValues.LOCAL);
     } else if (details.reason === 'update') {
@@ -282,6 +310,9 @@ export async function handleStartup(): Promise<void> {
     // outlives it too: leaving that record as `running` would make today's
     // automatic start join a round whose tabs are already gone.
     await stopSearches();
+    // Reading has no tab to close, only alarms and a short timer; a restart
+    // invalidates both, and its progress record is settled by abandonRun below.
+    await stopReading();
     await abandonRun('浏览器已重启，未能确认结果');
     await clearTrackedTabs();
     const s = await getStorageItems(['autoRunEnabled'], StorageValues.SYNC);

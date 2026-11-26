@@ -16,6 +16,7 @@ import { beginRun, requestStop } from './taskRun';
 import { getStorageItem, setStorageItem, setStorageItems } from '@/entrypoints/hooks/useStorage';
 import { StorageValues } from '@/entrypoints/enums/storageValues';
 import { localDateId } from '@/entrypoints/utils/localDate';
+import { READ_PROGRESS_KEY, readAlarmName, type ReadRunProgress } from '@/entrypoints/utils/readTask';
 import { ATTEMPTS_KEY, MIGRATION_KEY, PROGRESS_KEY, RESULTS_KEY, RUN_KEY, type RunProgress, type TaskAttempts, type TaskResults, type TaskRunState } from '@/entrypoints/utils/runState';
 
 const DASHBOARD_URL = 'https://rewards.bing.com/dashboard';
@@ -714,6 +715,26 @@ describe('handleDailyCheckAlarm', () => {
     expect(results?.claim).toBeUndefined();
     expect(await getStorageItem<TaskRunState>(RUN_KEY, StorageValues.LOCAL)).toBeNull();
     expect(run.id).toBeGreaterThan(0);
+  });
+
+  // Reading owns no tab, so its stop is the one place that has to end its run
+  // record explicitly. Left behind, the record blocked every later start.
+  it('cancels a read-only round, clears its alarms and ends its record', async () => {
+    const run = await beginRun(['read'], { searches: 5, timeout: 60, closeTime: 5 });
+    await setStorageItem(READ_PROGRESS_KEY, {
+      runId: run.id, baseline: 3, max: 30, target: 11, submitted: 1, claimed: 1, isReading: true,
+    }, StorageValues.LOCAL);
+    await fakeBrowser.alarms.create(readAlarmName(run.id, 2), { delayInMinutes: 0.5 });
+
+    await stopRewards();
+
+    const results = await getStorageItem<TaskResults>(RESULTS_KEY, StorageValues.LOCAL);
+    expect(results?.read).toEqual(expect.objectContaining({ status: 'cancelled', reason: '已停止' }));
+    expect(await getStorageItem<TaskRunState>(RUN_KEY, StorageValues.LOCAL)).toBeNull();
+    const progress = await getStorageItem<ReadRunProgress>(READ_PROGRESS_KEY, StorageValues.LOCAL);
+    expect(progress?.isReading).toBe(false);
+    const readAlarms = (await fakeBrowser.alarms.getAll()).filter((alarm) => alarm.name.startsWith('readActivity'));
+    expect(readAlarms).toHaveLength(0);
   });
 
   it('cancels an in-flight dashboard task without inventing the one that was off', async () => {

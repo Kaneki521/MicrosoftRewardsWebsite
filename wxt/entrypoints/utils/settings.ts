@@ -18,6 +18,15 @@ export const DEFAULTS = {
     // update — and with "Daily set" off it is what makes the dashboard tab open
     // at all, which briefly takes focus.
     claimPoints: false,
+    // When on, a round also submits the reading activity (the offer the
+    // userscript covered) through the Rewards mobile API. Off by default: it is
+    // the only task that needs its own OAuth authorization, and an update must
+    // not start sending a personal token on the user's behalf unasked.
+    autoRead: false,
+    // Seconds to wait after the search task finishes before the reading task
+    // starts. 0 starts it immediately; the reading task used to run in parallel
+    // with search, which made the two compete for the same account quota.
+    readDelay: 20,
     // Whether startup and the daily alarm may start a round on their own.
     // Independent of the three task toggles: those say which tasks a round runs,
     // this says whether a round starts without the user pressing the button.
@@ -36,16 +45,18 @@ export function matchingSearchPreset(searches: number): SearchPreset | null {
     return (SEARCH_PRESETS as readonly number[]).includes(searches) ? searches as SearchPreset : null;
 }
 
-export type NumericSetting = 'searches' | 'timeout' | 'closeTime';
+export type NumericSetting = 'searches' | 'timeout' | 'closeTime' | 'readDelay';
 
 // Inclusive integer bounds. 0 is a real timeout and a real close time: the
 // runner turns a 0s gap into about 1s, and treats a 0s close time as "close
 // once the tab has loaded". Those meanings stay; only values outside the range
-// are rejected.
+// are rejected. A 0s reading delay is likewise real: start as soon as the
+// search task ends.
 export const SETTING_LIMITS: Record<NumericSetting, { min: number; max: number }> = {
     searches: { min: 1, max: 999 },
     timeout: { min: 0, max: 9999 },
     closeTime: { min: 0, max: 300 },
+    readDelay: { min: 0, max: 600 },
 };
 
 // Whole integers only. A blank field, a decimal and anything outside the range

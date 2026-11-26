@@ -4,6 +4,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { fakeBrowser } from 'wxt/testing';
 import { finishSearch, handleAlarmStep, mayOpenFirstResult, startSearches, stopSearches } from './searchRunner';
+import { stopReading } from './readRunner';
 import { stopRewards } from './dailySchedule';
 import { beginRun, endRun, noteSearchTab, readSearchGrants, requestStop } from './taskRun';
 import { FIRST_RESULT_NAV_WINDOW_MS } from '@/entrypoints/utils/firstResult';
@@ -215,6 +216,19 @@ describe('searchRunner', () => {
   });
 
   describe('finishSearch', () => {
+    // 阅读任务不再和搜索并行起跑：搜索收尾后才按冻结的等待时间安排。
+    it('搜索收尾后按本轮冻结的等待时间安排阅读起跑', async () => {
+      const run = await beginRun(['search', 'read'], { searches: 5, timeout: 60, closeTime: 5, readDelay: 20 });
+
+      await finishSearch(run.id, { status: 'completed' });
+
+      expect(await fakeBrowser.alarms.get(`readStart:${run.id}`)).toBeDefined();
+      const state = await getStorageItem<TaskRunState>(RUN_KEY, StorageValues.LOCAL);
+      expect(state).toMatchObject({ search: false, read: true });
+      await stopReading();
+    });
+
+
     // Regression: the result write used to be awaited ahead of the cleanup
     // steps with nothing in between, so a transient failure of that one write
     // escaped before any of them — leaving the flag up, the badge on, the

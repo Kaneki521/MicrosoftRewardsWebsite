@@ -9,6 +9,8 @@ describe('parseSettingInput', () => {
     expect(parseSettingInput('timeout', '5')).toBe(5);
     expect(parseSettingInput('closeTime', '0')).toBe(0);
     expect(parseSettingInput('closeTime', '300')).toBe(300);
+    expect(parseSettingInput('readDelay', '0')).toBe(0);
+    expect(parseSettingInput('readDelay', '600')).toBe(600);
   });
 
   it('rejects a blank, a decimal, a negative and an out-of-range value', () => {
@@ -20,6 +22,8 @@ describe('parseSettingInput', () => {
     expect(parseSettingInput('searches', '1000')).toBeNull();
     expect(parseSettingInput('timeout', '10000')).toBeNull();
     expect(parseSettingInput('closeTime', '301')).toBeNull();
+    expect(parseSettingInput('readDelay', '601')).toBeNull();
+    expect(parseSettingInput('readDelay', '-1')).toBeNull();
     expect(parseSettingInput('searches', 'abc')).toBeNull();
   });
 });
@@ -39,6 +43,7 @@ describe('clampSetting', () => {
     expect(clampSetting('timeout', 0)).toBe(0);
     expect(clampSetting('timeout', 5)).toBe(5);
     expect(clampSetting('closeTime', 0)).toBe(0);
+    expect(clampSetting('readDelay', 20)).toBe(20);
   });
 
   it('replaces a missing or invalid stored value with that field default', () => {
@@ -49,5 +54,6 @@ describe('clampSetting', () => {
     expect(clampSetting('searches', 5000)).toBe(DEFAULTS.searches);
     expect(clampSetting('timeout', '5')).toBe(DEFAULTS.timeout);
     expect(clampSetting('closeTime', 9999)).toBe(DEFAULTS.closeTime);
+    expect(clampSetting('readDelay', 9999)).toBe(DEFAULTS.readDelay);
   });
 });

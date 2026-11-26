@@ -127,16 +127,16 @@ describe('combinedLoad', () => {
 describe('nextRoundSummary', () => {
     it('includes the search count only when search is selected', () => {
         expect(nextRoundSummary({
-            search: true, daily: true, claim: false, searches: 30, timeout: 60,
+            search: true, daily: true, claim: false, read: false, searches: 30, timeout: 60,
         })).toBe('搜索 · 每日活动 30 次 · 间隔 60 秒');
         expect(nextRoundSummary({
-            search: false, daily: true, claim: false, searches: 30, timeout: 60,
+            search: false, daily: true, claim: false, read: false, searches: 30, timeout: 60,
         })).toBe('每日活动');
         expect(nextRoundSummary({
-            search: false, daily: false, claim: true, searches: 30, timeout: 60,
+            search: false, daily: false, claim: true, read: false, searches: 30, timeout: 60,
         })).toBe('领取积分');
         expect(nextRoundSummary({
-            search: false, daily: false, claim: false, searches: 30, timeout: 60,
+            search: false, daily: false, claim: false, read: false, searches: 30, timeout: 60,
         })).toBe('未选择任务');
     });
 });

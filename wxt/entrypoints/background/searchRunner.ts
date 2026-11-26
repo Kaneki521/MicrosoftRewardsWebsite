@@ -6,8 +6,10 @@ import { buildSearchQuery, buildSearchUrl, nextDelayMs, shouldOpenMore } from '@
 import { getStorageItem } from '@/entrypoints/hooks/useStorage';
 import { StorageValues } from '@/entrypoints/enums/storageValues';
 import { clearBadge, setSearchCountBadge } from '@/entrypoints/utils/browserAction';
+import { DEFAULTS, clampSetting } from '@/entrypoints/utils/settings';
 import type { RunConfig } from '@/entrypoints/utils/runState';
 import { trackTab, untrackTab } from './tabCleanup';
+import { scheduleReadingStart } from './readRunner';
 import { claimStep, clearSearchGrants, currentRun, endRun, noteSearchDeadline, noteSearchTab, readConfig, readProgress, readSearchGrants, recordResult, revokeSearchGrants, writeProgress, writeProgressIfRunning, type TaskRunState } from './taskRun';
 
 const ALARM_NAME = 'openTabAlarm';
@@ -232,7 +234,21 @@ export async function finishSearch(runId: number, result: { status: 'completed' 
                 // page may still navigate after the schedule has finished.
                 if (result.status === 'cancelled') await revokeSearchGrants(runId);
             } finally {
-                if (settled) await endRun(runId, 'search');
+                if (settled) {
+                    // 搜索这一半收尾之后才轮到阅读。等待秒数取本轮开始时冻结的
+                    // 配置，运行中改设置只影响下一轮；配置丢失时用默认值。
+                    // 先安排阅读再清搜索标记：否则中间这一小段里 read 既没有
+                    // 期限、搜索标记又已落下，巡检可能把健康的阅读误判为中断。
+                    const config = await readConfig();
+                    const delaySeconds = clampSetting('readDelay', config?.readDelay ?? DEFAULTS.readDelay);
+                    try {
+                        await scheduleReadingStart(runId, delaySeconds * 1000);
+                    } catch {
+                        // 起跑安排失败时仍要让搜索结束；阅读由巡检按兜底期限收尾。
+                    } finally {
+                        await endRun(runId, 'search');
+                    }
+                }
             }
         }
     }

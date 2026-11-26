@@ -2,28 +2,27 @@ import { browser } from 'wxt/browser';
 import { getStorageItem, setStorageItem } from '@/entrypoints/hooks/useStorage';
 import { StorageValues } from '@/entrypoints/enums/storageValues';
 import { DASHBOARD_MAX_LIFETIME_MS, RUN_KEY, type TaskRunState } from '@/entrypoints/utils/runState';
+import { READ_ROUND_FALLBACK_MS } from '@/entrypoints/utils/readTask';
 import { endRun, recordResult } from './taskRun';
 import { finishSearch } from './searchRunner';
+import { finishRead } from './readRunner';
+import { CLEANUP_ALARM, ensureCleanupAlarm, isCleanupAlarm } from './cleanupAlarm';
+
+// Re-exported for the worker's alarm router and the tests that already import
+// it from this module.
+export { isCleanupAlarm };
 
 // Tab ids the extension opened, each mapped to the wall-clock time by which it
 // must be gone.
 type TrackedTabs = Record<string, number>;
 
 const REGISTRY_KEY = 'trackedTabs';
-const CLEANUP_ALARM = 'closeStaleTabs';
-// Chrome's floor for a repeating alarm. A tab whose in-memory timer was lost
-// therefore closes within about a minute of its deadline instead of never.
-const SWEEP_PERIOD_MINUTES = 1;
 
 // How long a search round may go without recording a next-step deadline before
 // a sweep treats it as abandoned. Generous on purpose: the longest legitimate
 // wait is one gap plus the platform's alarm floor, and this must not cut a slow
 // but healthy round short.
 const SEARCH_ROUND_FALLBACK_MS = 30 * 60 * 1000;
-
-export function isCleanupAlarm(name: string): boolean {
-    return name === CLEANUP_ALARM;
-}
 
 // Records a tab the extension opened so that it still gets closed when the
 // setTimeout meant to close it never runs. That is the normal case in an MV3
@@ -34,7 +33,7 @@ export function trackTab(tabId: number, closeAfterMs: number): Promise<void> {
     return enqueue(async () => {
         const tracked = await readRegistry();
         await writeRegistry({ ...tracked, [tabId]: Date.now() + closeAfterMs });
-        await ensureSweepAlarm();
+        await ensureCleanupAlarm();
     });
 }
 
@@ -69,12 +68,15 @@ export function sweepStaleTabs(): Promise<void> {
     });
 }
 
-// Settles a round whose own dashboard page is past its deadline.
+// Settles the parts of a round that have outlived their deadlines: the
+// dashboard tab, an abandoned search schedule, and an abandoned reading run.
 //
-// It has to be this round's tab, not "any Rewards page": the user may have the
-// dashboard open themselves, and counting that as ours would leave the round
-// hanging. It also has to run for a `stopping` round — a stop whose in-worker
-// cleanup was lost is exactly the state that would otherwise never end.
+// The dashboard has to be this round's tab, not "any Rewards page": the user may
+// have the dashboard open themselves, and counting that as ours would leave the
+// round hanging. It also has to run for a `stopping` round — a stop whose
+// in-worker cleanup was lost is exactly the state that would otherwise never
+// end. Reading and search have no page to judge, so their recorded deadlines
+// stand in.
 async function settleDashboardIfGone(): Promise<void> {
     const run = await getStorageItem<TaskRunState>(RUN_KEY, StorageValues.LOCAL);
     if (!run) return;
@@ -83,6 +85,7 @@ async function settleDashboardIfGone(): Promise<void> {
     // A stopped round has no live page left to report, so whatever it still
     // held is over too.
     const stoppingSearch = stopping && run.search;
+    const stoppingRead = stopping && run.read;
     // A search round is judged on the deadline its next step was due by: its
     // worker can die between opening a tab and arming that step, and nothing
     // else would ever end the record. That includes a round that also ran the
@@ -91,7 +94,13 @@ async function settleDashboardIfGone(): Promise<void> {
     // step allowance.
     const searchDeadline = run.searchDeadline ?? roundStart(run) + SEARCH_ROUND_FALLBACK_MS;
     const abandonedSearch = run.search && !stopping && searchDeadline <= Date.now();
-    if (dashboardKinds.length === 0 && !stoppingSearch && !abandonedSearch) return;
+    // Reading has no page at all, so this deadline is its only evidence of
+    // life. While search is still part of the round, reading is legitimately
+    // waiting for it to finish (the configurable delay), and search has its own
+    // deadline — judging read then would abandon a healthy round.
+    const readDeadline = run.readDeadline ?? roundStart(run) + READ_ROUND_FALLBACK_MS;
+    const abandonedRead = Boolean(run.read) && !run.search && !stopping && readDeadline <= Date.now();
+    if (dashboardKinds.length === 0 && !stoppingSearch && !abandonedSearch && !stoppingRead && !abandonedRead) return;
 
     // The dashboard half still owns its page: if its own tab is alive and its
     // deadline has not passed, only the search half may be settled here.
@@ -114,6 +123,13 @@ async function settleDashboardIfGone(): Promise<void> {
         await finishSearch(run.id, cancelled);
     } else if (abandonedSearch) {
         await finishSearch(run.id, { status: 'unconfirmed', reason: '后台中断，未能确认本轮搜索' });
+    }
+    // Reading ends through its own end step too, so its alarms, its short timer
+    // and its "正在阅读" flag cannot outlive the round.
+    if (stoppingRead) {
+        await finishRead(run.id, cancelled);
+    } else if (abandonedRead) {
+        await finishRead(run.id, { status: 'unconfirmed', reason: '后台中断，未能确认本轮阅读' });
     }
 }
 
@@ -164,16 +180,6 @@ function enqueue(operation: () => Promise<void>): Promise<void> {
     return run;
 }
 
-// Creating the alarm again replaces it and restarts its period, so a tab that is
-// registered while a sweep is already armed must leave the existing schedule alone.
-async function ensureSweepAlarm(): Promise<void> {
-    if (await browser.alarms.get(CLEANUP_ALARM)) return;
-    // Awaited: the caller has just written a tab into the registry on the
-    // promise that this alarm will sweep it, so a create that never settled
-    // must fail that caller instead of reporting the sweep as armed.
-    await browser.alarms.create(CLEANUP_ALARM, { periodInMinutes: SWEEP_PERIOD_MINUTES });
-}
-
 async function readRegistry(): Promise<TrackedTabs> {
     return (await getStorageItem<TrackedTabs>(REGISTRY_KEY, StorageValues.LOCAL)) ?? {};
 }
@@ -196,7 +202,7 @@ async function saveRemaining(tracked: TrackedTabs): Promise<void> {
         await browser.alarms.clear(CLEANUP_ALARM);
         return;
     }
-    await ensureSweepAlarm();
+    await ensureCleanupAlarm();
 }
 
 async function runNeedsSweep(): Promise<boolean> {

@@ -15,7 +15,10 @@ import ManualClaimButton from '@/entrypoints/components/ManualClaimButton';
 import SearchProgressBar from '@/entrypoints/components/SearchProgressBar';
 import TaskResultsList from '@/entrypoints/components/TaskResults';
 import DiagnosticsPanel from '@/entrypoints/components/DiagnosticsPanel';
+import ReadAuthPanel from '@/entrypoints/components/ReadAuthPanel';
 import Icon from '@/entrypoints/components/Icon';
+import { useReadAuth } from '@/entrypoints/hooks/useReadAuth';
+import { useReadProgress } from '@/entrypoints/hooks/useReadProgress';
 import { combinedLoad, combinedSave, countNeedsHandling, nextRoundSummary, resultsOfRound, statusView } from './status';
 
 // The fork's own Chinese README, not the upstream one: the behaviour documented
@@ -28,6 +31,7 @@ const ATTEMPT_LABELS: Record<TaskKind, string> = {
     search: '搜索',
     daily: '每日活动',
     claim: '领取积分',
+    read: '阅读任务',
 };
 
 function App() {
@@ -38,6 +42,8 @@ function App() {
     const closeTimeStore = useStorage<number>('closeTime', DEFAULTS.closeTime, StorageValues.SYNC);
     const openFirstStore = useStorage<boolean>('openFirstResult', DEFAULTS.openFirstResult, StorageValues.SYNC);
     const claimStore = useStorage<boolean>('claimPoints', DEFAULTS.claimPoints, StorageValues.SYNC);
+    const autoReadStore = useStorage<boolean>('autoRead', DEFAULTS.autoRead, StorageValues.SYNC);
+    const readDelayStore = useStorage<number>('readDelay', DEFAULTS.readDelay, StorageValues.SYNC);
     const autoRunStore = useStorage<boolean>('autoRunEnabled', DEFAULTS.autoRunEnabled, StorageValues.SYNC);
     const active = activeStore.value;
     const setActive = activeStore.setValue;
@@ -53,6 +59,10 @@ function App() {
     const setOpenFirstResult = openFirstStore.setValue;
     const claimPoints = claimStore.value;
     const setClaimPoints = claimStore.setValue;
+    const autoRead = autoReadStore.value;
+    const setAutoRead = autoReadStore.setValue;
+    const readDelayStored = readDelayStore.value;
+    const setReadDelay = readDelayStore.setValue;
     const autoRunEnabled = autoRunStore.value;
     const setAutoRunEnabled = autoRunStore.setValue;
     const [stopRequested, setStopRequested] = useState(false);
@@ -65,10 +75,13 @@ function App() {
     const [nextCheck, setNextCheck] = useState<number | null>(null);
     const [frozenConfig, setFrozenConfig] = useState<RunConfig | null>(null);
     const { isLoaded, isSearching, completed, total, isRunning, phase, runId, results } = useSearchProgress();
+    const readAuth = useReadAuth();
+    const readProgress = useReadProgress();
 
     const searches = clampSetting('searches', searchesStored);
     const timeout = clampSetting('timeout', timeoutStored);
     const closeTime = clampSetting('closeTime', closeTimeStored);
+    const readDelay = clampSetting('readDelay', readDelayStored);
 
     // The update badge is dismissed once the popup is opened — but the badge
     // doubles as the live search counter, so a running count is left alone.
@@ -152,7 +165,7 @@ function App() {
     const hasResults = isLoaded && (results.search || results.daily || results.claim);
     // "开始任务" needs at least one task selected. Auto-run is a separate switch:
     // off only means the alarm and startup will not start a round.
-    const hasTaskSelected = active || autoDaily || claimPoints;
+    const hasTaskSelected = active || autoDaily || claimPoints || autoRead;
     const isStopping = phase === 'stopping' || stopRequested;
 
     // Gaps this short are honoured, but whether Microsoft credits them cannot
@@ -162,7 +175,7 @@ function App() {
 
     const status = statusView({ isLoaded, isStopping, isRunning, results });
     const handlingCount = countNeedsHandling(results);
-    const bindings = [activeStore, autoDailyStore, searchesStore, timeoutStore, closeTimeStore, openFirstStore, claimStore, autoRunStore];
+    const bindings = [activeStore, autoDailyStore, searchesStore, timeoutStore, closeTimeStore, openFirstStore, claimStore, autoReadStore, readDelayStore, autoRunStore];
     const saveState = combinedSave(bindings.map((binding) => binding.saveState));
     const loadState = combinedLoad(bindings.map((binding) => binding.loadState));
     // Starting a round uses the values on screen, so it waits until every
@@ -178,7 +191,10 @@ function App() {
     // lose.
     const settingsUnreadable = loadState === 'error';
     const settingsDirtyWhileRunning = isRunning && frozenConfig != null && (
-        frozenConfig.searches !== searches || frozenConfig.timeout !== timeout || frozenConfig.closeTime !== closeTime
+        frozenConfig.searches !== searches
+        || frozenConfig.timeout !== timeout
+        || frozenConfig.closeTime !== closeTime
+        || (frozenConfig.readDelay ?? DEFAULTS.readDelay) !== readDelay
     );
     const displaySearches = isRunning && frozenConfig ? frozenConfig.searches : searches;
     const displayTimeout = isRunning && frozenConfig ? frozenConfig.timeout : timeout;
@@ -231,6 +247,7 @@ function App() {
                             <TaskTile id="autoCheckbox" label="执行搜索" checked={active} onChange={setActive} disabled={settingsUnreadable} />
                             <TaskTile id="autoDaily" label="完成每日活动" checked={autoDaily} onChange={setAutoDaily} disabled={settingsUnreadable} />
                             <TaskTile id="claimPoints" label="领取积分" checked={claimPoints} onChange={setClaimPoints} disabled={settingsUnreadable} />
+                            <TaskTile id="autoRead" label="完成阅读任务" checked={autoRead} onChange={setAutoRead} disabled={settingsUnreadable} />
                         </div>
                     </section>
                 </div>
@@ -285,6 +302,27 @@ function App() {
                         </div>
                     </section>
                 </div>
+
+                <div className="group">
+                    <h2 className="group-title">阅读任务</h2>
+                    <section className="card">
+                        <div className="param-grid">
+                            <NumberInput
+                                id="readDelay"
+                                kind="readDelay"
+                                label="搜索完成后等待"
+                                unit="秒"
+                                hint={`${SETTING_LIMITS.readDelay.min}～${SETTING_LIMITS.readDelay.max} 的整数`}
+                                value={readDelay}
+                                onChange={setReadDelay}
+                                disabled={settingsUnreadable}
+                            />
+                        </div>
+                        <p className="field-note">搜索任务结束后等待指定秒数再开始阅读任务；0 表示搜索结束后立即开始。没有勾选搜索任务时，阅读任务在轮次开始后直接执行。</p>
+                        <div className="divider" />
+                        <ReadAuthPanel />
+                    </section>
+                </div>
                 {settingsDirtyWhileRunning && (
                     <p className="field-note" role="status">设置将用于下一轮任务。</p>
                 )}
@@ -325,13 +363,16 @@ function App() {
                 <p className="round-note">
                     {isRunning
                         ? runningSummary(resultsOfRound(results, runId), displaySearches, displayTimeout)
-                        : nextRoundSummary({ search: active, daily: autoDaily, claim: claimPoints, searches, timeout })}
+                        : nextRoundSummary({ search: active, daily: autoDaily, claim: claimPoints, read: autoRead, searches, timeout })}
                 </p>
                 {settingsDirtyWhileRunning && (
                     <p className="field-note" role="status">设置将用于下一轮任务。</p>
                 )}
 
                 {hasSearchToShow && <SearchProgressBar completed={completed} total={total} />}
+                {autoRead && !isRunning && readAuth.isLoaded && !readAuth.authorized && (
+                    <p className="field-warning" role="status">阅读任务已开启但尚未授权，请在“高级设置”中完成授权。</p>
+                )}
 
                 <ManualClaimButton
                     isRunning={isRunning}
@@ -355,7 +396,15 @@ function App() {
                         <h2 id="results-heading" className="card-title">任务进度</h2>
                         {handlingCount > 0 && <span className="card-head-note">{handlingCount} 项需处理</span>}
                     </div>
-                    <TaskResultsList results={results} isRunning={isRunning} runId={runId} settingsNotReady={settingsNotReady} />
+                    <TaskResultsList
+                        results={results}
+                        isRunning={isRunning}
+                        runId={runId}
+                        settingsNotReady={settingsNotReady}
+                        readProgress={readProgress}
+                        readDelaySeconds={readDelay}
+                        readWaitingForSearch={isRunning && results.search?.status === 'running'}
+                    />
                 </section>
             )}
 
@@ -377,7 +426,7 @@ function App() {
                 <button type="button" className="advanced-row" onClick={() => setShowSettings(true)}>
                     <span className="advanced-text">
                         <span className="advanced-title">高级设置</span>
-                        <span className="advanced-sub">{nextRoundSummary({ search: active, daily: autoDaily, claim: claimPoints, searches, timeout })}</span>
+                        <span className="advanced-sub">{nextRoundSummary({ search: active, daily: autoDaily, claim: claimPoints, read: autoRead, searches, timeout })}</span>
                     </span>
                     <Icon name="chevron-right" />
                 </button>

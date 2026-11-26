@@ -2,7 +2,11 @@
 // (which only subscribes). Kept out of taskRun.ts so the popup bundle does not
 // pull in the background's storage writers.
 
-export type TaskKind = 'search' | 'daily' | 'claim';
+// The tasks a round can run. Kept as one list so every loop over "all tasks"
+// (round records, result rows, retries, diagnostics) grows together.
+export const TASK_KINDS = ['search', 'daily', 'claim', 'read'] as const;
+
+export type TaskKind = (typeof TASK_KINDS)[number];
 
 export type RunPhase = 'running' | 'stopping';
 
@@ -45,6 +49,10 @@ export interface TaskRunState {
     search: boolean;
     daily: boolean;
     claim: boolean;
+    // Reading runs in the background against the Rewards mobile API, so it owns
+    // no tab. Optional because records written before the task existed, and
+    // tests that only care about the other tasks, have no such flag.
+    read?: boolean;
     // When the round started. The fallback deadline for a round whose dashboard
     // tab was never recorded (the create failed, or the worker died in the gap),
     // so a sweep cannot mistake a just-started round for an abandoned one.
@@ -61,6 +69,10 @@ export interface TaskRunState {
     // opening a tab and arming the next step would never be settled and would
     // block every later start.
     searchDeadline?: number;
+    // The reading half's equivalent: when the next submission is due. A worker
+    // killed between a submission and arming the next step leaves no page and
+    // no timer behind, so the sweep uses this to settle the round.
+    readDeadline?: number;
     // The search tabs this round opened, recorded as each is created. The
     // bing-result content script asks before navigating to the first organic
     // result; only a tab named here counts as this round's own, so a page that
@@ -75,6 +87,9 @@ export interface RunConfig {
     searches: number;
     timeout: number;
     closeTime: number;
+    // 搜索结束后到阅读任务开始之间的等待秒数。旧轮次记录没有这个字段，
+    // 读取时回退到默认值。
+    readDelay?: number;
 }
 
 export interface RunProgress {
@@ -90,6 +105,7 @@ export type TaskAttempts = {
     search?: string;
     daily?: string;
     claim?: string;
+    read?: string;
 };
 
 // Safety cap: close the dashboard tab even if the content script never reports
@@ -121,7 +137,7 @@ export const STATE_MIGRATION_VERSION = 1;
 export function roundReference(results: TaskResults, runId: number | null): number | null {
     if (runId != null) return runId;
     let latest: number | null = null;
-    for (const kind of ['search', 'daily', 'claim'] as const) {
+    for (const kind of TASK_KINDS) {
         const id = results[kind]?.runId;
         if (id != null && (latest == null || id > latest)) latest = id;
     }
