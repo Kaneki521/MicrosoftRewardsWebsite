@@ -11,11 +11,11 @@
 # this build into 升级与改进 / 问题修复 / 文档与维护 sections, keeps the
 # install and verification notes after them, and reaches gh release create
 # through --notes-file in both the tag-create and tag-reuse paths.
+#
+# This script only publishes the GitHub Release. It never uploads to or
+# submits a browser store; Chrome Web Store submission stays in the separate
+# manual publish-cws.yml workflow.
 set -euo pipefail
-
-# A stable Release for this exact master commit can trigger store submission,
-# including a rerun after Release creation succeeded but store submission failed.
-printf 'store_release_tag=\n' >> "$GITHUB_OUTPUT"
 
 summary() {
   {
@@ -154,28 +154,15 @@ release_state() {
 
 skip_existing() {
   local reason="$1"
-  local release_url store_note="不触发（仅处理 master 的正式版本）"
+  local release_url
   release_url="$(gh api "repos/${GH_REPO}/releases/tags/${release_tag}" --jq '.html_url')"
   [[ -n "$release_url" && "$release_url" != "null" ]] || fail "Release $release_tag 已存在，但没有返回地址"
-  if [[ "$prerelease" == "0" && "${GITHUB_REF:-}" == "refs/heads/master" ]]; then
-    api_status "repos/${GH_REPO}/git/ref/tags/${release_tag}"
-    require_status "$API_STATUS" "200" "无法确认已有 Release 的标签 $release_tag"
-    local tag_commit
-    tag_commit="$(resolve_tag_commit "$release_tag")"
-    if [[ "$tag_commit" == "$BUILD_SHA" ]]; then
-      printf 'store_release_tag=%s\n' "$release_tag" >> "$GITHUB_OUTPUT"
-      store_note="继续检查并上传或提审 ${release_tag}（已有 Release 指向本次提交）"
-    else
-      store_note="不触发（${release_tag} 指向其他提交；同版本普通提交不重复提审）"
-    fi
-  fi
   summary \
     "- 构建版本：${package_version}" \
     "- 提交 SHA：${BUILD_SHA}" \
     "- 是否创建标签：否" \
     "- Release：${release_url}" \
-    "- 跳过原因：${reason}" \
-    "- 商店衔接：${store_note}"
+    "- 跳过原因：${reason}"
   echo "Skipped release: $reason"
   exit 0
 }
@@ -363,7 +350,7 @@ change_sections
 
 # One notes file serves both consumers: the annotated tag message when this
 # run creates the tag, and the Release body via --notes-file. Change sections
-# come first; the fixed install, checksum and store-policy text stays after.
+# come first; the fixed install and checksum text stays after.
 notes_file="$(mktemp)"
 {
   printf 'Rewards 助手 %s\n' "$package_version"
@@ -383,7 +370,7 @@ notes_file="$(mktemp)"
   - ${firefox_zip_name}：${firefox_sha256}
 - 完整校验清单见同一 Release 的 SHA256SUMS 附件；产物由提交 ${BUILD_SHA} 构建并通过全部检查。
 
-master 发布流程会上传 Chrome ZIP 并提交商店审核；同一提交重跑时可复用已有 Release 继续商店步骤。审核通过后由商店自动上线，无需手动发布。创建 Release 不代表扩展已经在商店上线。使用前请查看仓库 README 的已知问题与验证范围。
+本工作流只构建并发布 GitHub Release，不会上传或提交 Chrome 网上应用店；需要上架商店时请按 README 手动运行商店工作流。创建 Release 不代表扩展已经上架。使用前请查看仓库 README 的已知问题与验证范围。
 EOF
 } > "$notes_file"
 
@@ -435,6 +422,3 @@ summary \
   "- 产物校验：${firefox_zip_name}（SHA-256 ${firefox_sha256}）" \
   "- 跳过原因：无"
 echo "Published $release_url"
-if [[ "$prerelease" == "0" && "${GITHUB_REF:-}" == "refs/heads/master" ]]; then
-  printf 'store_release_tag=%s\n' "$release_tag" >> "$GITHUB_OUTPUT"
-fi

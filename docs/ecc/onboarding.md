@@ -62,7 +62,7 @@ flutter run          # or: flutter build apk
 
 ## Deployment (all manual)
 
-> 历史背景：本节为迁移前的手工发布记录，已不是现行流程。现在 `master` 构建成功并创建正式 Release 后，工作流自动上传 Chrome ZIP 提交商店审核，`publishType` 为 `DEFAULT_PUBLISH`（`skipReview=false`、`blockOnWarnings=true`），审核通过后由商店自动上线；Firefox 无商店渠道，仍随 Release 分发 ZIP。见 README「发布到 Chrome 网上应用店」与 [docs/feature-status.md](../feature-status.md)。
+> 历史背景：本节为迁移前的手工发布记录，已不是现行流程。现在 `master` 构建成功只创建正式 Release 并分发 Chrome／Firefox ZIP，**不会**自动上传或提交商店；需要上架时手动运行「发布到 Chrome 网上应用店」，`publishType` 为 `DEFAULT_PUBLISH`（`skipReview=false`、`blockOnWarnings=true`），审核通过后由商店自动上线。见 README「发布到 Chrome 网上应用店（手动，可选）」与 [docs/feature-status.md](../feature-status.md)。
 
 - Chrome Web Store, Firefox Add-ons: zip the `prod/` folder and upload
   (see the many `chrome/prod/prod*.zip` files — one per version, versioned by hand).

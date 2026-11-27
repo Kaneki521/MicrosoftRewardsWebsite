@@ -33,8 +33,8 @@
 | 环节 | 状态 | 说明 |
 | --- | --- | --- |
 | 构建 + Release（`build.yml`） | ✅ 在用 | 同一提交完成类型检查、单测、Chrome/Firefox 打包与发布脚本夹具测试；正式版本取 `wxt/package.json` 的 `version`。 |
-| Chrome 商店提审（`publish-cws.yml`） | ✅ 在用 | **触发条件：`master` 分支构建（含在 `master` 上勾选确认的手动运行）且 `release` 作业输出有效正式版本**（`store_release_tag` 非空）时自动上传 Chrome ZIP 并提审；标签推送创建的 Release、未勾选确认或不在 `master` 的手动运行**不会**触发提审。请求体固定 `{"publishType":"DEFAULT_PUBLISH","skipReview":false,"blockOnWarnings":true}`，**审核通过后由商店自动上线**，无需人工在后台点发布。README「发布到 Chrome 网上应用店」一节是现行发布指南。 |
-| 上线记录 | 🔎 | README 记录 2026-11-04 `v3.1.4` 在 Actions 验证过 WIF 认证、读取状态、上传与提审（返回 `PENDING_REVIEW`）；自动调用链与同提交重跑的恢复路径仍需在真实 Actions 中观察。 |
+| Chrome 商店提审（`publish-cws.yml`） | ✅ 手动 | 只通过 `workflow_dispatch` 手动运行，不再由 `build.yml` 自动调用；`check` 读取状态，`submit` 从指定正式 Release 上传 Chrome ZIP 并提审。请求体固定 `{"publishType":"DEFAULT_PUBLISH","skipReview":false,"blockOnWarnings":true}`，审核通过后由商店自动上线。README「发布到 Chrome 网上应用店（手动，可选）」一节是现行指南。 |
+| 上线记录 | 🔎 | README 记录 2026-11-04 `v3.1.4` 在 Actions 验证过 WIF 认证、读取状态、上传与提审（返回 `PENDING_REVIEW`）；自动调用已移除，商店入口保持手动。 |
 
 ## 移动端（microsoft_rewards_app/）
 

@@ -232,8 +232,7 @@ chmod +x "$work/bin/jq" "$work/bin/gh" "$work/bin/git" "$work/bin/python"
 run_case() {
   local name="$1"
   local expected="$2"
-  local expected_store_tag="$3"
-  shift 3
+  shift 2
   local case_dir="$work/cases/$name"
   local saved="$work/saved/$name"
   mkdir -p "$case_dir/state" "$saved"
@@ -291,9 +290,6 @@ run_case() {
       [[ "$status" != "0" && "$summary" == *"发布失败"* && "$summary" != *"跳过原因：无"* && ! -f "$case_dir/state/created" && ! -f "$case_dir/state/local-tag" ]] && ok=1
       ;;
   esac
-  local store_tag
-  store_tag="$(awk -F= '$1 == "store_release_tag" { tag = $2 } END { print tag }' "$case_dir/outputs")"
-  [[ "$store_tag" == "$expected_store_tag" ]] || ok=0
   if [[ "$ok" != "1" ]]; then
     echo "FAIL $name (status=$status)"
     echo "$summary"
@@ -378,8 +374,14 @@ expect_notes() {
       exit 1
     fi
   done
-  grep -qF '审核通过后由商店自动上线' "$body" \
-    || { echo "FAIL $case_name: store auto-publish policy missing from the body"; exit 1; }
+  grep -qF '不会上传或提交 Chrome 网上应用店' "$body" \
+    || { echo "FAIL $case_name: release-only policy missing from the body"; exit 1; }
+  grep -qF '手动运行商店工作流' "$body" \
+    || { echo "FAIL $case_name: manual store guidance missing from the body"; exit 1; }
+  if grep -qF '审核通过后由商店自动上线' "$body"; then
+    echo "FAIL $case_name: body still claims automatic store submission"
+    exit 1
+  fi
   grep -qF 'SHA256SUMS' "$body" \
     || { echo "FAIL $case_name: verification notes missing from the body"; exit 1; }
   if [[ -f "$case_dir/tag-message" ]]; then
@@ -406,8 +408,8 @@ expect_notes_fix_only() {
     || { echo "FAIL $case_name: direct-commit entry with author and commit link missing"; exit 1; }
   grep -qxF -- '- 修复商店自动提审重跑与重复版本处理。[@ming](https://github.com/ming) · [1212121](https://example.test/commit/1212)' "$body" \
     || { echo "FAIL $case_name: separator-less 修复 subject not classified as a fix"; exit 1; }
-  grep -qF '审核通过后由商店自动上线' "$body" \
-    || { echo "FAIL $case_name: store auto-publish policy missing from the body"; exit 1; }
+  grep -qF '不会上传或提交 Chrome 网上应用店' "$body" \
+    || { echo "FAIL $case_name: release-only policy missing from the body"; exit 1; }
   echo "PASS $case_name-notes"
 }
 
@@ -499,7 +501,7 @@ cat > "$fixtures/compare-fix-only.json" <<'EOF'
 EOF
 
 prepare_absent new-version
-run_case new-version create v3.1.3
+run_case new-version create
 expect_checksums new-version
 # Without a previous version tag there is no honest range: the body keeps
 # the install notes but must not invent change sections.
@@ -515,7 +517,7 @@ prepare_absent notes-with-prs
 set_remote_tags notes-with-prs "refs/tags/v3.1.2" "refs/tags/v3.1.3"
 put_fixture notes-with-prs compare.json "$fixtures/compare-mixed.json"
 put_fixture notes-with-prs prs.json "$fixtures/prs-mixed.json"
-run_case notes-with-prs create v3.1.3
+run_case notes-with-prs create
 expect_checksums notes-with-prs
 expect_notes notes-with-prs
 
@@ -526,84 +528,93 @@ set_state notes-reuse tag-v3.1.3 same
 set_remote_tags notes-reuse "refs/tags/v3.1.2" "refs/tags/v3.1.3"
 put_fixture notes-reuse compare.json "$fixtures/compare-mixed.json"
 put_fixture notes-reuse prs.json "$fixtures/prs-mixed.json"
-run_case notes-reuse reuse v3.1.3
+run_case notes-reuse reuse
 expect_notes notes-reuse
 
 prepare_absent notes-fix-only
 set_remote_tags notes-fix-only "refs/tags/v3.1.2"
 put_fixture notes-fix-only compare.json "$fixtures/compare-fix-only.json"
-run_case notes-fix-only create v3.1.3
+run_case notes-fix-only create
 expect_notes_fix_only notes-fix-only
 
 prepare_absent existing-release
 set_state existing-release release-v3.1.3 exists
 set_state existing-release tag-v3.1.3 same
-run_case existing-release skip v3.1.3
+run_case existing-release skip
 [[ ! -s "$work/cases/existing-release/git.log" ]] || { echo "FAIL existing release wrote to git"; exit 1; }
 
 prepare_absent existing-release-annotated-tag
 set_state existing-release-annotated-tag release-v3.1.3 exists
 set_state existing-release-annotated-tag tag-v3.1.3 annotated
-run_case existing-release-annotated-tag skip v3.1.3
+run_case existing-release-annotated-tag skip
 
+# With no store handoff, an existing Release is final. Skipping must not need
+# the tag to resolve, so a missing or unreadable tag cannot turn it into a
+# failure or a republish attempt.
 prepare_absent existing-release-missing-tag
 set_state existing-release-missing-tag release-v3.1.3 exists
-run_case existing-release-missing-tag fail ''
+run_case existing-release-missing-tag skip
+if grep -q '/git/ref/tags/' "$work/cases/existing-release-missing-tag/gh.log"; then
+  echo "FAIL existing-release-missing-tag: skip looked up the tag"
+  exit 1
+fi
 
 prepare_absent existing-release-tag-query-error
 set_state existing-release-tag-query-error release-v3.1.3 exists
 set_state existing-release-tag-query-error tag-v3.1.3 503
-run_case existing-release-tag-query-error fail ''
+run_case existing-release-tag-query-error skip
 
 # Normal master commits retain the version but no longer match its old tag.
 prepare_absent existing-release-older-tag
 set_state existing-release-older-tag release-v3.1.3 exists
 set_state existing-release-older-tag tag-v3.1.3 other
-run_case existing-release-older-tag skip ''
+run_case existing-release-older-tag skip
 [[ ! -s "$work/cases/existing-release-older-tag/git.log" ]] || { echo "FAIL existing release wrote to git"; exit 1; }
 
 prepare_absent same-tag
 set_state same-tag tag-v3.1.3 same
-run_case same-tag reuse v3.1.3
+run_case same-tag reuse
 expect_checksums same-tag
 
 prepare_absent other-tag
 set_state other-tag tag-v3.1.3 other
-run_case other-tag fail ''
+run_case other-tag fail
 
 prepare_absent build-failed
-run_case build-failed fail '' \
+run_case build-failed fail \
   bash -c 'rm -f artifacts/extension-firefox/*-firefox.zip'
 
 prepare_absent api-error
 set_state api-error release-v3.1.3 503
-run_case api-error fail ''
+run_case api-error fail
 
 prepare_absent tag-query-error
 set_state tag-query-error tag-v3.1.3 401
-run_case tag-query-error fail ''
+run_case tag-query-error fail
 
 prepare_absent annotated-tag
 set_state annotated-tag tag-v3.1.3 annotated
-run_case annotated-tag reuse v3.1.3
+run_case annotated-tag reuse
 
-# Manual reruns of the same master commit also continue to store submission.
+# Manual reruns of the same master commit skip the existing Release without
+# failing and without reporting a store handoff.
 prepare_absent manual-existing-release
 set_state manual-existing-release release-v3.1.3 exists
 set_state manual-existing-release tag-v3.1.3 same
-run_case manual-existing-release skip v3.1.3 \
+run_case manual-existing-release skip \
   env GITHUB_EVENT_NAME="workflow_dispatch" CONFIRM_RELEASE="true"
 
-# Tag-triggered releases, including prereleases, never request store submission.
+# Tag-triggered releases, including prereleases, still publish or reuse their
+# Release; they never touch a browser store.
 prepare_absent stable-tag
 set_state stable-tag tag-v3.1.3 same
-run_case stable-tag reuse '' \
+run_case stable-tag reuse \
   env GITHUB_REF="refs/tags/v3.1.3" GITHUB_REF_NAME="v3.1.3"
 
 prepare_absent prerelease-existing-tag
 set_state prerelease-existing-tag tag-v3.1.3-beta.2 annotated
 set_state prerelease-existing-tag release-v3.1.3-beta.2 absent
-run_case prerelease-existing-tag reuse '' \
+run_case prerelease-existing-tag reuse \
   env GITHUB_REF="refs/tags/v3.1.3-beta.2" GITHUB_REF_NAME="v3.1.3-beta.2"
 
 # A prerelease backfilled after a newer stable tag exists must derive its range
@@ -614,7 +625,7 @@ set_state backfilled-prerelease tag-v3.1.3-beta.2 same
 set_state backfilled-prerelease release-v3.1.3-beta.2 absent
 set_remote_tags backfilled-prerelease "refs/tags/v3.1.2" "refs/tags/v3.1.3" "refs/tags/v3.1.5"
 put_fixture backfilled-prerelease compare.json "$fixtures/compare-fix-only.json"
-run_case backfilled-prerelease reuse '' \
+run_case backfilled-prerelease reuse \
   env GITHUB_REF="refs/tags/v3.1.3-beta.2" GITHUB_REF_NAME="v3.1.3-beta.2"
 grep -qF 'compare/v3.1.2...' "$work/cases/backfilled-prerelease/gh.log" \
   || { echo "FAIL backfilled-prerelease: range must start below the prerelease base version"; exit 1; }
@@ -627,31 +638,31 @@ expect_notes_fix_only backfilled-prerelease
 prepare_absent prerelease
 set_state prerelease tag-v3.1.3-beta.2 absent
 set_state prerelease release-v3.1.3-beta.2 absent
-run_case prerelease fail '' \
+run_case prerelease fail \
   env GITHUB_REF="refs/tags/v3.1.3-beta.2" GITHUB_REF_NAME="v3.1.3-beta.2"
 
 prepare_absent stable-tag-mismatch
 set_state stable-tag-mismatch tag-v3.1.2 absent
 set_state stable-tag-mismatch release-v3.1.2 absent
-run_case stable-tag-mismatch fail '' \
+run_case stable-tag-mismatch fail \
   env GITHUB_REF="refs/tags/v3.1.2" GITHUB_REF_NAME="v3.1.2"
 
 prepare_absent manual-confirmed
-run_case manual-confirmed create v3.1.3 \
+run_case manual-confirmed create \
   env GITHUB_EVENT_NAME="workflow_dispatch" GITHUB_REF="refs/heads/master" CONFIRM_RELEASE="true"
 
 prepare_absent manual-unconfirmed
-run_case manual-unconfirmed fail '' \
+run_case manual-unconfirmed fail \
   env GITHUB_EVENT_NAME="workflow_dispatch" CONFIRM_RELEASE="false"
 
 prepare_absent raced-publish
 set_state raced-publish push-v3.1.3 race
-run_case raced-publish skip v3.1.3
+run_case raced-publish skip
 
 # A wrong manifest version must fail before any tag or release is considered,
 # for both packages.
 prepare_absent bad-manifest
-run_case bad-manifest fail '' \
+run_case bad-manifest fail \
   bash -c '"$PYTHON" - artifacts/extension-chrome/rewards-3.1.3-chrome.zip '"'"'{"manifest_version":3,"version":"9.9.9","name":"fixture"}'"'"' <<'"'"'PY'"'"'
 import json, sys, zipfile
 path, payload = sys.argv[1:]
@@ -660,7 +671,7 @@ with zipfile.ZipFile(path, "w") as archive:
 PY'
 
 prepare_absent bad-manifest-firefox
-run_case bad-manifest-firefox fail '' \
+run_case bad-manifest-firefox fail \
   bash -c '"$PYTHON" - artifacts/extension-firefox/rewards-3.1.3-firefox.zip '"'"'{"manifest_version":2,"version":"9.9.9","name":"fixture"}'"'"' <<'"'"'PY'"'"'
 import json, sys, zipfile
 path, payload = sys.argv[1:]
@@ -670,7 +681,7 @@ PY'
 
 # Each target must keep its own manifest_version: Chrome MV3, Firefox MV2.
 prepare_absent wrong-manifest-version-chrome
-run_case wrong-manifest-version-chrome fail '' \
+run_case wrong-manifest-version-chrome fail \
   bash -c '"$PYTHON" - artifacts/extension-chrome/rewards-3.1.3-chrome.zip '"'"'{"manifest_version":2,"version":"3.1.3","name":"fixture"}'"'"' <<'"'"'PY'"'"'
 import json, sys, zipfile
 path, payload = sys.argv[1:]
@@ -679,7 +690,7 @@ with zipfile.ZipFile(path, "w") as archive:
 PY'
 
 prepare_absent wrong-manifest-version-firefox
-run_case wrong-manifest-version-firefox fail '' \
+run_case wrong-manifest-version-firefox fail \
   bash -c '"$PYTHON" - artifacts/extension-firefox/rewards-3.1.3-firefox.zip '"'"'{"manifest_version":3,"version":"3.1.3","name":"fixture"}'"'"' <<'"'"'PY'"'"'
 import json, sys, zipfile
 path, payload = sys.argv[1:]
@@ -689,7 +700,7 @@ PY'
 
 # A string-typed manifest_version ("3") must not pass as MV3.
 prepare_absent string-manifest-version-chrome
-run_case string-manifest-version-chrome fail '' \
+run_case string-manifest-version-chrome fail \
   bash -c '"$PYTHON" - artifacts/extension-chrome/rewards-3.1.3-chrome.zip '"'"'{"manifest_version":"3","version":"3.1.3","name":"fixture"}'"'"' <<'"'"'PY'"'"'
 import json, sys, zipfile
 path, payload = sys.argv[1:]
@@ -699,7 +710,7 @@ PY'
 
 # A ZIP without a root manifest.json fails for either package.
 prepare_absent missing-manifest-chrome
-run_case missing-manifest-chrome fail '' \
+run_case missing-manifest-chrome fail \
   bash -c '"$PYTHON" - artifacts/extension-chrome/rewards-3.1.3-chrome.zip <<'"'"'PY'"'"'
 import sys, zipfile
 with zipfile.ZipFile(sys.argv[1], "w") as archive:
@@ -707,7 +718,7 @@ with zipfile.ZipFile(sys.argv[1], "w") as archive:
 PY'
 
 prepare_absent missing-manifest-firefox
-run_case missing-manifest-firefox fail '' \
+run_case missing-manifest-firefox fail \
   bash -c '"$PYTHON" - artifacts/extension-firefox/rewards-3.1.3-firefox.zip <<'"'"'PY'"'"'
 import sys, zipfile
 with zipfile.ZipFile(sys.argv[1], "w") as archive:

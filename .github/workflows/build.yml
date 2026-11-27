@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm_release:
-        description: 对 master 当前版本检查和打包，创建或复用同一提交的正式 Release，自动上传 Chrome 商店并提审
+        description: 对 master 当前版本检查和打包，创建或复用同一提交的正式 Release（不提交 Chrome 商店）
         type: boolean
         required: true
         default: false
@@ -68,8 +68,8 @@ jobs:
   release:
     name: 发布到 Releases
     needs: build
-    outputs:
-      store_release_tag: ${{ steps.publish.outputs.store_release_tag }}
+    # This workflow ends at the GitHub Release. Chrome Web Store submission is
+    # a separate manual workflow (publish-cws.yml) and is never called here.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.ref == 'refs/heads/master' ||
@@ -102,18 +102,5 @@ jobs:
         run: gh run download "$GITHUB_RUN_ID" --pattern 'extension-*' --dir artifacts
 
       - name: 创建版本并上传扩展 ZIP
-        id: publish
         shell: bash
         run: bash .github/scripts/publish-release.sh
-
-  store:
-    name: 提交 Chrome 商店审核
-    needs: release
-    if: github.ref == 'refs/heads/master' && needs.release.outputs.store_release_tag != ''
-    permissions:
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/publish-cws.yml
-    with:
-      mode: submit
-      release_tag: ${{ needs.release.outputs.store_release_tag }}

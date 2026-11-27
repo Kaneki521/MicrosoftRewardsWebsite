@@ -177,19 +177,17 @@ npm ci
 
 GitHub Actions 支持在线构建和 GitHub Release。工作流名为「在线构建扩展（可能创建 Release）」：更新 `master`、手动运行，或推送以 `v` 开头的标签时，都会对**本次提交**做类型检查、单元测试和 Chrome／Firefox 打包。任一环节失败则不会发布。ZIP 可在运行记录的 Artifacts 下载。
 
-正式版本取本次提交里 `wxt/package.json` 的 `version`，对应标签为 `v${version}`。`master` 推送或手动运行时，只有该 Release **尚不存在**才会创建指向本次提交的附注标签并上传两份 ZIP；同一版本之后的普通提交仍运行检查和打包，但跳过发布，不移动已有标签，也不覆盖已有 Release。手动运行必须勾选确认项，因为确认后可能创建 Release，并在 `master` 上自动提交 Chrome 商店审核。
+正式版本取本次提交里 `wxt/package.json` 的 `version`，对应标签为 `v${version}`。`master` 推送或手动运行时，只有该 Release **尚不存在**才会创建指向本次提交的附注标签并上传两份 ZIP；同一版本之后的普通提交仍运行检查和打包，但跳过发布，不移动已有标签，也不覆盖已有 Release。手动运行必须勾选确认项，因为确认后可能创建 Release。
 
 推送已有的 `v*` 标签时仍会发布，但正式标签必须与包内版本一致，且标签必须指向本次构建的提交；名称含 `-` 的标签（如 `v3.1.3-beta.1`）沿用预发布处理。已有 Release 时直接跳过。
 
-Release 正文由发布脚本自动生成：取上一个正式版本标签到本次提交之间的实际改动，按「升级与改进／问题修复／文档与维护」分组，能关联已合并 PR 的条目附作者与 PR 链接，其余附作者与提交链接；单纯提升版本号的提交不进入说明，空栏目省略，安装说明、产物校验与商店上线说明固定放在更新内容之后。新建标签时附注写同一份说明，创建 Release 时通过 `--notes-file` 把它作为正文，重跑复用已有标签时同样重新生成并使用。重跑拉取已有标签，是为了针对先前解析到的同一标签对象发布。GitHub Release 使用 GitHub 自带的 `GITHUB_TOKEN` 创建。创建 Release 或完成本地构建，都不等于已经发布到商店。
+Release 正文由发布脚本自动生成：取上一个正式版本标签到本次提交之间的实际改动，按「升级与改进／问题修复／文档与维护」分组，能关联已合并 PR 的条目附作者与 PR 链接，其余附作者与提交链接；单纯提升版本号的提交不进入说明，空栏目省略，安装说明与产物校验说明固定放在更新内容之后。新建标签时附注写同一份说明，创建 Release 时通过 `--notes-file` 把它作为正文，重跑复用已有标签时同样重新生成并使用。重跑拉取已有标签，是为了针对先前解析到的同一标签对象发布。GitHub Release 使用 GitHub 自带的 `GITHUB_TOKEN` 创建。创建 Release 或完成本地构建，都不等于已经发布到商店。
 
-### 发布到 Chrome 网上应用店
+### 发布到 Chrome 网上应用店（手动，可选）
 
-`master` 构建成功并创建正式 Release 后，构建工作流会调用「发布到 Chrome 网上应用店」（`.github/workflows/publish-cws.yml`），**自动上传该 Release 的 Chrome ZIP 并提交审核**。ZIP 直接取自 Release，不重新构建。发布新版本时，更新 `wxt/package.json` 和锁文件中的版本，推送到 `master`，或在 GitHub 上从 `master` 手动运行构建并勾选确认项即可，无需再手动触发商店工作流。
+自动发布工作流只构建并创建 GitHub Release，**不会上传或提交 Chrome 网上应用店**。需要上架时，手动运行「发布到 Chrome 网上应用店」（`.github/workflows/publish-cws.yml`）：`check` 只读取商店状态，`submit` 从指定正式 Release 下载 Chrome ZIP 并提交审核。商店发布与 Release 流程相互独立；创建 Release 不代表扩展已经上架。
 
-如果 Release 已存在，只有其标签仍指向**本次构建的同一提交**，才会复用 Release 并继续商店步骤。这允许同一提交的工作流重跑补做上传或提审；同一版本之后的普通提交、标签推送、预发布和前置失败不会自动提审。新提交使用“审核通过后自动发布”，无需在审核结束后手动上线。
-
-自动入口通过同一构建流程中的可复用工作流调用，不依赖 Release 事件触发。商店工作流也保留手动入口，可用于读取状态或重新提交指定 Release。自动与手动入口共用校验、状态保护和并发锁。
+发布新版本时，更新 `wxt/package.json` 和锁文件中的版本，推送到 `master`，或在 GitHub 上从 `master` 手动运行构建并勾选确认项；Release 创建完成后，再按需手动运行商店工作流并选择 `submit` 与该 Release 标签。
 
 认证使用 Workload Identity Federation（WIF）换取短期访问令牌，不使用 JSON 密钥文件、refresh token 或长期凭据。仓库需要在 **Settings → Secrets and variables → Actions → Variables** 里配置四个 Repository Variable：
 
@@ -202,9 +200,9 @@ Release 正文由发布脚本自动生成：取上一个正式版本标签到本
 
 `CWS_WIF_PROVIDER` 按原样保存，脚本只有格式校验，不做任何“修正”。当前提供方 ID 以 `providers/-github` 结尾，开头的横线是真实值的一部分，删掉或改写会导致认证失败。
 
-Google 侧目前只允许 `shixiaogaoya/MicrosoftRewardsWebsite` 仓库的 `master` 分支通过 WIF 认证，因此自动调用和手动运行都必须来自 `master`。可复用工作流继承调用方事件，脚本只接受 `push` 或 `workflow_dispatch`，并用 `GITHUB_REF` 校验分支；不满足时直接失败。商店任务所需的 GitHub 权限只有 `contents: read` 和 `id-token: write`。
+Google 侧目前只允许 `shixiaogaoya/MicrosoftRewardsWebsite` 仓库的 `master` 分支通过 WIF 认证，因此手动运行商店工作流也必须来自 `master`。脚本只接受 `push` 或 `workflow_dispatch`，并用 `GITHUB_REF` 校验分支；不满足时直接失败。商店任务所需的 GitHub 权限只有 `contents: read` 和 `id-token: write`。
 
-手动运行时选择 `master`，再选择以下模式（自动入口固定使用 `submit`）：
+手动运行时选择 `master`，再选择以下模式：
 
 | 模式 | `release_tag` | 行为 |
 | --- | --- | --- |
@@ -224,9 +222,9 @@ Google 侧目前只允许 `shixiaogaoya/MicrosoftRewardsWebsite` 仓库的 `mast
 
 此策略用于后续新提交，不会改变已经按旧策略送审的版本。旧策略下处于 STAGED 的版本仍需在开发者后台手动上线；同版本重跑会保留现有状态，不会重新上传、提审或自动上线。
 
-若商店任务失败，已经创建的 GitHub Release 会保留。排除阻塞后可重跑同一提交的整个构建工作流，或重跑失败的商店作业；无需为重试提升版本。若修复已经产生新提交，可手动使用 `submit` 和原来的 `release_tag`。同一版本已在审核或已发布时会跳过重复操作。
+若商店任务失败，已经创建的 GitHub Release 会保留。排除阻塞后可重跑商店工作流；无需为重试提升版本。若修复已经产生新提交，可手动使用 `submit` 和原来的 `release_tag`。同一版本已在审核或已发布时会跳过重复操作。
 
-本地验证覆盖脚本逻辑：`.github/scripts/publish-release.test.sh` 和 `.github/scripts/publish-cws.test.sh` 使用桩，不访问网络或真实商店；CI 会执行这两套测试。2026-11-04 已在 GitHub Actions 验证 WIF 认证、读取状态、上传和提审：[`v3.1.4` 提交记录](https://github.com/shixiaogaoya/MicrosoftRewardsWebsite/actions/runs/41818144486) 返回 `PENDING_REVIEW`。这次记录使用手动入口；自动调用及同提交重跑的恢复路径仍需在真实 Actions 中验证。
+本地验证覆盖脚本逻辑：`.github/scripts/publish-release.test.sh` 和 `.github/scripts/publish-cws.test.sh` 使用桩，不访问网络或真实商店；CI 会执行这两套测试。2026-11-04 已在 GitHub Actions 验证 WIF 认证、读取状态、上传和提审：[`v3.1.4` 提交记录](https://github.com/shixiaogaoya/MicrosoftRewardsWebsite/actions/runs/41818144486) 返回 `PENDING_REVIEW`。该记录使用手动入口；商店入口保持手动触发，不再由构建工作流自动调用。
 
 ## 反馈与许可
 
